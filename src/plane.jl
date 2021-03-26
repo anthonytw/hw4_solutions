@@ -15,6 +15,9 @@ using ForwardDiff
 const RD = RobotDynamics
 const TO = TrajectoryOptimization
 
+include("costfuns.jl")
+include("ilqr.jl")
+
 function slerp(qa::UnitQuaternion{T}, qb::UnitQuaternion{T}, t::T) where {T}
     # http://www.euclideanspace.com/maths/algebra/realNormedAlgebra/quaternions/slerp/
     coshalftheta = qa.w * qb.w + qa.x * qb.x + qa.y * qb.y + qa.z * qb.z;
@@ -75,6 +78,10 @@ function YakProblems(;
     n,m = size(model)
     rsize = size(model)[1] - 9
     vinds = SA[1,2,3,8,9,10,11,12,13]
+    ip = SA[1,2,3]
+    iq = SA[4,5,6,7]
+    iv = SA[8,9,10]
+    iw = SA[11,12,13]
 
     # Discretization
     tf = 1.25
@@ -143,7 +150,6 @@ function YakProblems(;
                     x2 = x̄m
                 else
                     t = (k-2Nmid)/(2Nmid+1)
-                    @show k-2Nmid
                     x1 = x̄m
                     x2 = x̄f
                 end
@@ -187,8 +193,8 @@ function YakProblems(;
         throw(ArgumentError("$scenario isn't a known scenario"))
     end
     # Objective
-    Qf_diag = RD.fill_state(model, 10, 500, 100, 100.)
-    Q_diag = RD.fill_state(model, Qpos*0.1, 0.1, 0.1, 1.1)
+    Qf_diag = RD.fill_state(model, 10, 500*0, 100, 100.)
+    Q_diag = RD.fill_state(model, Qpos*0.1, 0.1*0, 0.1, 1.1)
     Qf = Diagonal(Qf_diag)
     Q = Diagonal(Q_diag)
     R = Diagonal(@SVector fill(1e-3,4))
@@ -219,9 +225,38 @@ function YakProblems(;
         costfuns = map(Xref) do xref
             TO.QuatLQRCost(Q, R, xref, utrim, w=0.1)
         end
-        costterm = TO.QuatLQRCost(Qf, R, Xref[end], utrim; w=200.0)
+        costterm = TO.QuatLQRCost(Qf, R, Xref[end], utrim*0; w=200.0)
         costfuns[end] = costterm
     end
+    costs = map(1:N-1) do k
+        RigidBodyCost(
+            Diagonal(Q_diag[ip])*dt,
+            0.1*dt, 
+            Diagonal(Q_diag[iv])*dt,
+            Diagonal(Q_diag[iw])*dt,
+            R*dt,
+            Xref[k][ip],
+            Xref[k][iq],
+            Xref[k][iv],
+            Xref[k][iw],
+            utrim
+        )
+    end
+    costterm = RigidBodyCost(
+            Diagonal(Qf_diag[ip]),
+            200.0, 
+            Diagonal(Qf_diag[iv]),
+            Diagonal(Qf_diag[iw]),
+            R,
+            Xref[N][ip],
+            Xref[N][iq],
+            Xref[N][iv],
+            Xref[N][iw],
+            utrim
+        )
+    push!(costs, costterm)
+    prob2 = iLQRProblem(model, costs, tf, x0)
+    
     obj = Objective(costfuns)
 
     # Initialization
@@ -230,7 +265,7 @@ function YakProblems(;
     # Build problem
     prob = Problem(model, obj, xf, tf, x0=x0, integration=integration)
     initial_controls!(prob, U0)
-    prob, opts, Xref, x̄f
+    return prob, prob2, opts, Xref
 end
 
 function get_trim(model, x_trim, u_guess;
@@ -276,23 +311,70 @@ function get_trim(model, x_trim, u_guess;
     end
     return z[iu]
 end
-u = get_trim(prob.model, x0, fill(100,4), tol=1e-4)
 
-p0 = MRP(0.997156, 0., 0.075366) # initial orientation
-pf = MRP(0., -0.0366076, 0.) # final orientation (upside down)
-vel = 5.0
-utrim  = @SVector  [41.6666, 106, 74.6519, 106]
+## Launch Visualizer
+vis = Visualizer()
+open(vis, Blink.Window())
+delete!(vis)
+model = RobotZoo.YakPlane(UnitQuaternion)
+TrajOptPlots.set_mesh!(vis, model, color=colorant"yellow")
+
 
 ##
-prob, opts, Xref = YakProblems(costfun=:QuatLQR, scenario=:halfloop, heading=130)
-x0 = prob.x0
-∇f = RobotDynamics.DynamicsJacobian(prob.model)
-dynamics(prob.model, x0, utrim)
+# utrim = get_trim(prob.model, x0, fill(100,4), tol=1e-4)
+prob, prob2, opts, Xref = YakProblems(costfun=:QuatLQR, scenario=:halfloop, heading=130)
+rollout!(prob)
+X0 = states(prob)
+U0 = controls(prob)
 visualize!(vis, prob.model, prob.tf, Xref)
 solver = ALTROSolver(prob, opts, verbose=2, infeasible=false)
 solve!(solver)
 visualize!(vis, solver)
 Uhalf = controls(solver)
+
+## New iLQR
+X = deepcopy(X0)
+U = deepcopy(U0)
+evalcost(prob2.obj, X,U) ≈ cost(prob)
+solver = ALTROSolver(prob, save_S = true, verbose=2, cost_tolerance=1e-10, gradient_tolerance=1e-6)
+solver = Altro.get_ilqr(solver)
+solver.ρ[1] = 0.0
+n,m,N = size(prob)
+
+P = [zeros(n-1,n-1) for k = 1:N]
+p = [zeros(n-1) for k = 1:N]
+K = [zeros(m,n-1) for k = 1:N-1]
+d = [zeros(m) for k = 1:N-1]
+ilqr.opts.save_S = true
+dJ, Quu, Qux, Qu = backwardpass!(prob2, P, p, K, d, X, U, β=0.0)
+J = evalcost(prob2.obj, X, U)
+forwardpass!(prob2, X, U, K, d, dJ, J)
+Xsol, Usol = solve_ilqr(prob2, X0, U0, verbose=1)
+
+solve!(solver)
+cost(solver)
+norm(Xsol - states(solver))
+norm(Usol - controls(solver))
+evalcost(prob2.obj, Xsol, Usol)
+maximum(norm.(solver.d, Inf))
+
+TO.state_diff_jacobian!(solver.G, solver.model, solver.Z)
+TO.dynamics_expansion!(TO.integration(solver), solver.D, solver.model, solver.Z, solver.cache)
+TO.error_expansion!(solver.D, solver.model, solver.G)
+TO.cost_expansion!(solver.quad_obj, solver.obj, solver.Z, solver.exp_cache, init=true, rezero=true)
+TO.error_expansion!(solver.E, solver.quad_obj, solver.model, solver.Z, solver.G)
+ΔV = Altro.static_backwardpass!(solver)
+Altro.forwardpass!(solver, ΔV, cost(solver))
+
+
+k = N-2
+Quu[k] ≈ solver.Q[k].uu
+Qux[k] ≈ solver.Q[k].ux
+Qu[k]
+solver.Q[k].u
+
+q,r = gradient(prob2.obj[k], X[k], U[k])
+r
 
 prob2, opts, Xref2, xf = YakProblems(costfun=:QuatLQR, scenario=:fullloop, heading=130, Qpos=100)
 visualize!(vis, prob2.model, prob2.tf, Xref2)
@@ -320,10 +402,3 @@ visualize!(vis, solver)
 
 plot(controls(solver))
 plot(Xref2, inds=11:13)
-
-##
-vis = Visualizer()
-open(vis, Blink.Window())
-delete!(vis)
-model = RobotZoo.YakPlane(UnitQuaternion)
-TrajOptPlots.set_mesh!(vis, model, color=colorant"yellow")

@@ -13,7 +13,7 @@ where `tf` is the final time, and `x0` is the initial state.
 struct iLQRProblem{n,m,L,O}
     model::L
     obj::Vector{O}
-    T::Int
+    N::Int
     tf::Float64
     x0::MVector{n,Float64}
     times::Vector{Float64}
@@ -25,7 +25,7 @@ struct iLQRProblem{n,m,L,O}
         new{n,m,L,O}(model, obj, T, tf, x0, times)
     end
 end
-Base.size(prob::iLQRProblem{n,m}) where {n,m} = (n,m,prob.T)
+Base.size(prob::iLQRProblem{n,m}) where {n,m} = (n,m,prob.N)
 
 """
     backwardpass!(prob, P, p, K, d, X, U)
@@ -38,7 +38,7 @@ Should return ΔJ, expected cost reduction.
 function backwardpass!(prob::iLQRProblem{n,m}, P, p, K, d, X, U; 
         β=1e-6, ddp::Bool=false
     ) where {n,m}
-    T = prob.T
+    N = prob.N
     obj = prob.obj
     ΔJ = 0.0
     failed = false
@@ -48,21 +48,19 @@ function backwardpass!(prob::iLQRProblem{n,m}, P, p, K, d, X, U;
     # SOLUTION
     ∇f = RobotDynamics.DynamicsJacobian(prob.model) 
     ∇jac = zeros(n+m,n+m) 
-    iq = SA[4,5,6,7]
+    iq = state_parts(prob.model)[2]
     Iq = Diagonal(SA[0,0,0,1,1,1, 0,0,0, 0,0,0])
 
-    G2 = @MMatrix zeros(n,n-1)
-    G1 = @MMatrix zeros(n,n-1)
-    RobotDynamics.state_diff_jacobian!(G2, prob.model, X[T])
-    Q, = hessian(prob.obj[T], X[T], 0*U[T-1])
-    q, = gradient(prob.obj[T], X[T], 0*U[T-1])
-    p[T] = G2'q
-    b = q[iq]'X[T][iq]
-    P[T] = G2'Q*G2 - Iq*(q[iq]'X[T][iq])
+    G2 = state_error_jacobian(prob.model, X[N])
+    Q, = hessian(prob.obj[N], X[N], 0*U[1])
+    q, = gradient(prob.obj[N], X[N], 0*U[1])
+    p[N] = G2'q
+    b = q[iq]'X[N][iq]
+    P[N] = G2'Q*G2 - Iq*(q[iq]'X[N][iq])
     
     #Backward Pass
     failed = false
-    for k = (T-1):-1:1
+    for k = (N-1):-1:1
 
         # Cost Expansion
         Q,R =  hessian(prob.obj[k], X[k], U[k])
@@ -76,7 +74,7 @@ function backwardpass!(prob::iLQRProblem{n,m}, P, p, K, d, X, U;
         B = RobotDynamics.get_static_B(∇f)
 
         # Convert to error state
-        RobotDynamics.state_diff_jacobian!(G1, prob.model, X[k])
+        G1 = state_error_jacobian(prob.model, X[k])
         q = G1'q
         Q = G1'Q*G1 - Iq*(q[iq]'X[k][iq])
         A = G2'A*G1
@@ -98,18 +96,9 @@ function backwardpass!(prob::iLQRProblem{n,m}, P, p, K, d, X, U;
         end
     
         # Regularization
-
-        Gxx_reg = Gxx #+ A'*β*I*A
         Guu_reg = Guu + B'*β*I*B
-        Gux_reg = Gux #+ B'*β*I*A
+        Gux_reg = Gux 
         Guu_reg = SMatrix{m,m}(Guu) + β*Diagonal(@SVector ones(m))
-        # C = cholesky(Symmetric([Gxx_reg Gux_reg'; Gux_reg Guu_reg]), check=false)
-        # if !issuccess(C)
-        #     β = 2*β
-        #     failed = true
-        #     println("INCREASING REGULARIZATION")
-        #     break
-        # end
         
         # Calculate Gains
         d[k] .= Guu_reg\gu
@@ -120,7 +109,7 @@ function backwardpass!(prob::iLQRProblem{n,m}, P, p, K, d, X, U;
         P[k] .= Gxx + K[k]'*Guu*K[k] - Gux'*K[k] - K[k]'*Gux
         ΔJ += gu'*d[k]
 
-        G2 .= G1        
+        G2 = G1        
     end
     return ΔJ
 end
@@ -138,7 +127,7 @@ function forwardpass!(prob::iLQRProblem{n,m}, X, U, K, d, ΔJ, J,
         Xbar = deepcopy(X), Ubar = deepcopy(U);
         max_iters=10,
     ) where {n,m}
-    T = prob.T
+    N = prob.N
     model = prob.model
 
     # TODO: Implement the forward pass w/ line search
@@ -153,10 +142,10 @@ function forwardpass!(prob::iLQRProblem{n,m}, X, U, K, d, ΔJ, J,
     for i = 1:max_iters
         
         # Forward Rollout
-        for k = 1:(T-1)
+        for k = 1:(N-1)
             t = prob.times[k]
             dt = prob.times[k+1] - prob.times[k]
-            dx = RobotDynamics.state_diff(model, Xbar[k], X[k])
+            dx = state_error(model, Xbar[k], X[k])
             Ubar[k] = U[k] - α*d[k] - K[k]*dx
             Xbar[k+1] = discrete_dynamics(RK4, model, Xbar[k], Ubar[k], t, dt) 
         end
@@ -178,11 +167,11 @@ function forwardpass!(prob::iLQRProblem{n,m}, X, U, K, d, ΔJ, J,
     end
     
     # Accept direction
-    for k = 1:T-1
+    for k = 1:N-1
         X[k] = Xbar[k]
         U[k] = Ubar[k]
     end
-    X[T] = Xbar[T]
+    X[N] = Xbar[N]
     
     return Jn, α
 end
@@ -209,13 +198,13 @@ function solve_ilqr(prob::iLQRProblem{n,m}, X0, U0;
     Nx,Nu,Nt = size(prob)
 
     # Initialization
-    T = prob.T
-    p = [zeros(n-1) for k = 1:T]      # ctg gradient
-    P = [zeros(n-1,n-1) for k = 1:T]    # ctg hessian
-    d = [zeros(m) for k = 1:T-1]    # feedforward gains
-    K = [zeros(m,n-1) for k = 1:T-1]  # feedback gains
-    Xbar = [@SVector zeros(n) for k = 1:T]    # line search trajectory
-    Ubar = [@SVector zeros(m) for k = 1:T-1]  # line search trajectory
+    N = prob.N
+    p = [zeros(n-1) for k = 1:N]              # ctg gradient
+    P = [zeros(n-1,n-1) for k = 1:N]          # ctg hessian
+    d = [zeros(m) for k = 1:N-1]              # feedforward gains
+    K = [zeros(m,n-1) for k = 1:N-1]          # feedback gains
+    Xbar = [@SVector zeros(n) for k = 1:N]    # line search trajectory
+    Ubar = [@SVector zeros(m) for k = 1:N-1]  # line search trajectory
     ΔJ = 0.0
 
     # Don't modify the trajectories that are passed in

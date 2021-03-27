@@ -12,13 +12,16 @@ using MeshCat
 using Blink
 using Colors
 using ForwardDiff
+using RobotZoo: YakPlane
 const RD = RobotDynamics
 const TO = TrajectoryOptimization
 
 include("costfuns.jl")
 include("ilqr.jl")
 
+
 function slerp(qa::UnitQuaternion{T}, qb::UnitQuaternion{T}, t::T) where {T}
+    # Borrowed from Quaternions.jl
     # http://www.euclideanspace.com/maths/algebra/realNormedAlgebra/quaternions/slerp/
     coshalftheta = qa.w * qb.w + qa.x * qb.x + qa.y * qb.y + qa.z * qb.z;
 
@@ -200,47 +203,111 @@ function YakProblems(;
 end
 
 function get_trim(model, x_trim, u_guess;
+        verbose = false,
         tol = 1e-4,
         iters = 100,
     )
-    x̄ = RBState(model, x_trim)
-    ṙ = x̄.v 
-    q̇ = Rotations.kinematics(x̄.q, x̄.ω)
-    a = zeros(3)
-    α = zeros(3)
-    v_trim = [ṙ; q̇; a; α]
-    n,m = size(model)
-    G = zeros(n,n-1)
-    RobotDynamics.state_diff_jacobian!(G, model, x_trim)
 
-    iu = SVector{m}(1:m)
-    ic = SVector{6}(m .+ (1:6))
-    ia = SVector{6}(1:6) .+ 7
+    a = zeros(3)       # linear acceleration
+    α = zeros(3)       # angular acceleration
+    n,m = size(model)
+
+    iu = SVector{m}(1:m)           # control indices
+    ic = SVector{6}(m .+ (1:6))    # constraint indices
+    ia = SVector{6}(1:6) .+ 7      # acceleration indices
+
+    # Jacobian of the constraint
     ∇f(u) = ForwardDiff.jacobian(u_->dynamics(model, x_trim, u_), u)[ia,:]
 
+    # Residual function
     r(z) = [z[iu] - u_guess + ∇f(z[iu])'z[ic]; dynamics(model, x_trim, z[iu])[ia] ]
+
+    # Jacobian of the the residual function
     ∇r(z) = begin
         u,λ = z[iu], z[ic] 
         B = ∇f(u)
         [I B'; B -I(6)*1e-6]
     end
-    # r([u_guess; @SVector zeros(n-1)])
+
+    # Initial guess
     λ = @SVector zeros(6)
     z = [u_guess; λ]
 
+    # Newton solve
     for i = 1:iters
+        # Check convergence
         res = r(z)
-        println(norm(res))
+        verbose && println(norm(res))
         if norm(res) < tol 
-            println("converged in $i iterations")
+            verbose && println("converged in $i iterations")
             break
         end
+
+        # Compute Newton step
         R = ∇r(z) 
-        # display(R)
         dz = -(R \ res)
         z += dz
     end
+
+    # Return the trim controls
     return z[iu]
+end
+
+function state_parts(model::YakPlane)
+    ip = SA[1,2,3]
+    iq = SA[4,5,6,7]
+    iv = SA[8,9,10]
+    iw = SA[11,12,13]
+    return ip, iq, iv, iw
+end
+
+function lmult(q)
+    SA[
+        q[1] -q[2] -q[3] -q[4];
+        q[2]  q[1] -q[4]  q[3];
+        q[3]  q[4]  q[1] -q[2];
+        q[4] -q[3]  q[2]  q[1];
+    ]
+end
+
+function state_error(model::YakPlane, x, x0)
+    ip,iq,iv,iw = state_parts(model)
+    q  = UnitQuaternion(x[iq])
+    q0 = UnitQuaternion(x0[iq])
+    dq = cayleymap(lmult(x0[iq])'x[iq]) 
+    return [x[ip] - x0[ip]; dq; x[iv] - x0[iv]; x[iw] - x0[iw]]
+end
+cayleymap(q) = SA[q.x,q.y,q.z] / q.w
+cayleymap(q::StaticVector{4}) = SA[q[2],q[3],q[4]] / q[1]
+
+function state_error_jacobian(model, x)
+    iq = state_parts(model)[2]
+    q = x[iq] 
+    G = attitude_jacobian(q)
+    SA[
+        1 0 0 0 0 0 0 0 0 0 0 0;
+        0 1 0 0 0 0 0 0 0 0 0 0;
+        0 0 1 0 0 0 0 0 0 0 0 0;
+        0 0 0 G[1] G[5] G[9]  0 0 0 0 0 0;
+        0 0 0 G[2] G[6] G[10] 0 0 0 0 0 0;
+        0 0 0 G[3] G[7] G[11] 0 0 0 0 0 0;
+        0 0 0 G[4] G[8] G[12] 0 0 0 0 0 0;
+        0 0 0 0 0 0 1 0 0 0 0 0;
+        0 0 0 0 0 0 0 1 0 0 0 0;
+        0 0 0 0 0 0 0 0 1 0 0 0;
+        0 0 0 0 0 0 0 0 0 1 0 0;
+        0 0 0 0 0 0 0 0 0 0 1 0;
+        0 0 0 0 0 0 0 0 0 0 0 1;
+    ]
+end
+
+function attitude_jacobian(q)
+    SA[
+        -q[2] -q[3] -q[4];
+         q[1] -q[4]  q[3];
+         q[4]  q[1] -q[2];
+        -q[3]  q[2]  q[1];
+    ]
 end
 
 function rollout(model, x0::StaticVector{n}, U, times) where n
@@ -261,24 +328,22 @@ delete!(vis)
 model = RobotZoo.YakPlane(UnitQuaternion)
 TrajOptPlots.set_mesh!(vis, model, color=colorant"yellow")
 
-
-##
-# utrim = get_trim(prob.model, x0, fill(100,4), tol=1e-4)
+## Solve half-loop
 prob_half, Xref_half, utrim = YakProblems(costfun=:QuatLQR, scenario=:halfloop, heading=130)
-U0 = [copy(utrim) for k = 1:prob_half.T-1]
+U0 = [copy(utrim) for k = 1:prob_half.N-1]
 X0 = rollout(prob_half.model, prob_half.x0, U0, prob_half.times)
 plot(X0, inds=1:3)
-visualize!(vis, prob_half.model, prob_half.tf, Xref)
+visualize!(vis, prob_half.model, prob_half.tf, Xref_half)
 
 Xhalf, Uhalf = solve_ilqr(prob_half, X0, U0, verbose=1, eps=1e-4, reg_min=1e-6)
 visualize!(vis, prob_half.model, prob_half.tf, Xhalf)
 
-##
+## Full Loop
 prob, Xref2 = YakProblems(costfun=:QuatLQR, scenario=:fullloop, heading=130, Qpos=100)
 visualize!(vis, prob.model, prob.tf, Xref2)
 
 # Design initial control
-U0 = [copy(utrim) for k = 1:prob.T-1]
+U0 = [copy(utrim) for k = 1:prob.N-1]
 for k = 1:length(Uhalf)
     U0[k] = Uhalf[k]
 end

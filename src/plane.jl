@@ -54,30 +54,16 @@ function slerp(qa::UnitQuaternion{T}, qb::UnitQuaternion{T}, t::T) where {T}
 end
 
 function YakProblems(;
-        integration=RD.RK4,
         N = 101,
         vecstate=false,
         scenario=:barrellroll, 
-        costfun=:Quadratic, 
-        termcon=:goal,
-        quatnorm=:none,
         heading=0.0,  # deg
         Qpos=1.0,
         kwargs...
     )
     model = RobotZoo.YakPlane(UnitQuaternion)
 
-    opts = SolverOptions(
-        cost_tolerance_intermediate = 1e-1,
-        penalty_scaling = 10.,
-        penalty_initial = 10.;
-        kwargs...
-    )
-
-    s = RD.LieState(model)
     n,m = size(model)
-    rsize = size(model)[1] - 9
-    vinds = SA[1,2,3,8,9,10,11,12,13]
     ip = SA[1,2,3]
     iq = SA[4,5,6,7]
     iv = SA[8,9,10]
@@ -92,23 +78,32 @@ function YakProblems(;
     dt = tf/(N-1)
 
     # Initial and final orientation 
-    p0 = MRP(0.997156, 0., 0.075366) # initial orientation
-    pf = MRP(0., -0.0366076, 0.) # final orientation (upside down)
     vel = 5.0
-    utrim  = @SVector  [41.6666, 106, 74.6519, 106]
 
     if scenario ∈ (:halfloop, :fullloop) 
         ey = @SVector [0,1,0.]
 
+        # Heading
         dq = expm(SA[0,0,1]*deg2rad(heading))
-        pf = pf * dq
-        pm = expm(SA[1,0,0]*deg2rad(180))*expm(SA[0,1,0]*deg2rad(90))
+        # pf = pf * dq
 
+        # Initial state
+        p0 = MRP(0.997156, 0., 0.075366) # initial orientation (level flight)
         x0 = RD.build_state(model, [-3,0,1.5], p0, [vel,0,0], [0,0,0])
+
+        # Climb
+        pm = expm(SA[1,0,0]*deg2rad(180))*expm(SA[0,1,0]*deg2rad(90))
         xm = RD.build_state(model, [0,0,3.], pm, pm * [vel,0,0.], [0,0,0])
-        xm2 = RD.build_state(model, [-3,3,4.], pm * RotY(pi), [0,0,-vel], [0,0,0])
+
+        # Top of loop
+        pf = MRP(0., -0.0366076, 0.) * dq # final orientation (upside down)
         xf = RD.build_state(model, dq*[3,0,6.], pf, pf * [vel,0,0.], [0,0,0])
         pf2 = RotZ(deg2rad(heading-180))
+
+        # Dive
+        xm2 = RD.build_state(model, [-3,3,4.], pm * RotY(pi), [0,0,-vel], [0,0,0])
+
+        # Terminal state
         xf2 = RD.build_state(model, [0,4,1.5], p0, [vel,0,0], [0,0,0])
 
         t_flat = 5 / (xf[2] - xf[1])
@@ -156,7 +151,6 @@ function YakProblems(;
                 x1.r + (x2.r - x1.r)*t,
                 slerp(x1.q, x2.q, t),
                 x1.v + (x2.v - x1.v)*t,
-                # x1.ω + (x2.ω - x1.ω)*t,
                 SA[0,pi/1.25,0]
             )
         end
@@ -164,46 +158,17 @@ function YakProblems(;
         throw(ArgumentError("$scenario isn't a known scenario"))
     end
 
+    # Get trim condition
+    utrim = get_trim(model, x0, fill(124, 4))
+
     # Objective
     Qf_diag = RD.fill_state(model, 10, 500*0, 100, 100.)
     Q_diag = RD.fill_state(model, Qpos*0.1, 0.1*0, 0.1, 1.1)
-    Qf = Diagonal(Qf_diag)
-    Q = Diagonal(Q_diag)
     R = Diagonal(@SVector fill(1e-3,4))
-    if quatnorm == :slack
-        m += 1
-        R = Diagonal(push(R.diag, 1e-6))
-        utrim = push(utrim, 0)
-    end
-    if costfun == :Quadratic
-        costfuns = map(Xref) do xref
-            LQRCost(Q, R, xref, utrim)
-        end
-        costfun = LQRCost(Q, R, xf, utrim)
-        costterm = LQRCost(Qf, R, xf, utrim)
-        costfuns[end] = costterm
-    elseif costfun == :Quadratic2
-        Gf = zeros(n,n-1)
-        costfuns = map(Xref) do xref
-            RobotDynamics.state_diff_jacobian!(Gf, model, xref)
-            Q̄ = Gf*Diagonal(deleteat(Q_diag,4))*Gf'
-            LQRCost(Q̄, R, xref, utrim)
-        end
-        RobotDynamics.state_diff_jacobian!(Gf, model, Xref[end])
-        Q̄f = Gf*Diagonal(deleteat(Qf_diag,4))*Gf'
-        costterm = LQRCost(Q̄f, R, Xref[end], utrim)
-        costfuns[end] = costterm
-    elseif costfun == :QuatLQR
-        costfuns = map(Xref) do xref
-            TO.QuatLQRCost(Q, R, xref, utrim, w=0.1)
-        end
-        costterm = TO.QuatLQRCost(Qf, R, Xref[end], utrim*0; w=200.0)
-        costfuns[end] = costterm
-    end
     costs = map(1:N-1) do k
         RigidBodyCost(
             Diagonal(Q_diag[ip])*dt,
-            0.1*dt, 
+            10.0*dt, 
             Diagonal(Q_diag[iv])*dt,
             Diagonal(Q_diag[iw])*dt,
             R*dt,
@@ -219,7 +184,7 @@ function YakProblems(;
             200.0, 
             Diagonal(Qf_diag[iv]),
             Diagonal(Qf_diag[iw]),
-            R,
+            R*0,
             Xref[N][ip],
             Xref[N][iq],
             Xref[N][iv],
@@ -227,17 +192,11 @@ function YakProblems(;
             utrim
         )
     push!(costs, costterm)
-    prob2 = iLQRProblem(model, costs, tf, x0)
-    
-    obj = Objective(costfuns)
-
-    # Initialization
-    U0 = [copy(utrim) for k = 1:N-1]
 
     # Build problem
-    prob = Problem(model, obj, xf, tf, x0=x0, integration=integration)
-    initial_controls!(prob, U0)
-    return prob, prob2, opts, Xref
+    prob = iLQRProblem(model, costs, tf, x0)
+
+    return prob, Xref, utrim
 end
 
 function get_trim(model, x_trim, u_guess;
@@ -284,6 +243,17 @@ function get_trim(model, x_trim, u_guess;
     return z[iu]
 end
 
+function rollout(model, x0::StaticVector{n}, U, times) where n
+    N = length(U0) + 1
+    X = [@SVector zeros(n) for k = 1:N]
+    X[1] = x0
+    for k = 1:N-1
+        dt = times[k+1] - times[k]
+        X[k+1] = discrete_dynamics(RK4, model, X[k], U[k], times[k], dt)
+    end
+    return X
+end
+
 ## Launch Visualizer
 vis = Visualizer()
 open(vis, Blink.Window())
@@ -294,50 +264,28 @@ TrajOptPlots.set_mesh!(vis, model, color=colorant"yellow")
 
 ##
 # utrim = get_trim(prob.model, x0, fill(100,4), tol=1e-4)
-prob, prob2, opts, Xref = YakProblems(costfun=:QuatLQR, scenario=:halfloop, heading=130)
-rollout!(prob)
-X0 = states(prob)
-U0 = controls(prob)
-visualize!(vis, prob.model, prob.tf, Xref)
-solver = ALTROSolver(prob, opts, verbose=2, infeasible=false, gradient_tolerance=1e-6)
-solve!(solver)
-visualize!(vis, solver)
-Uhalf = controls(solver)
+prob_half, Xref_half, utrim = YakProblems(costfun=:QuatLQR, scenario=:halfloop, heading=130)
+U0 = [copy(utrim) for k = 1:prob_half.T-1]
+X0 = rollout(prob_half.model, prob_half.x0, U0, prob_half.times)
+plot(X0, inds=1:3)
+visualize!(vis, prob_half.model, prob_half.tf, Xref)
 
-## New iLQR
-Xsol, Usol = solve_ilqr(prob2, X0, U0, verbose=1, eps=1e-4, reg_min=1e-6)
-visualize!(vis, prob2.model, prob2.tf, Xsol)
+Xhalf, Uhalf = solve_ilqr(prob_half, X0, U0, verbose=1, eps=1e-4, reg_min=1e-6)
+visualize!(vis, prob_half.model, prob_half.tf, Xhalf)
 
 ##
-prob, prob2, opts, Xref2 = YakProblems(costfun=:QuatLQR, scenario=:fullloop, heading=130, Qpos=100)
-visualize!(vis, prob2.model, prob2.tf, Xref2)
+prob, Xref2 = YakProblems(costfun=:QuatLQR, scenario=:fullloop, heading=130, Qpos=100)
+visualize!(vis, prob.model, prob.tf, Xref2)
 
-U0 = controls(prob)
-u_hover = U0[1]
-for k = 1:length(U0)
-    k2 = min(k, length(Uhalf))
-    U0[k] = Uhalf[k2]
+# Design initial control
+U0 = [copy(utrim) for k = 1:prob.T-1]
+for k = 1:length(Uhalf)
+    U0[k] = Uhalf[k]
 end
 U0[1+length(Uhalf):end] .= reverse(Uhalf)
-initial_controls!(prob, U0)
-rollout!(prob)
-X0 = states(prob)
-visualize!(vis, prob)
-solver = ALTROSolver(prob, opts, verbose=3, infeasible=false, gradient_tolerance=.01)
-solve!(solver)
-visualize!(vis, solver)
-cost(solver)
+X0 = rollout(prob.model, prob.x0, U0, prob.times)
+visualize!(vis, prob.model, prob.tf, X0)
 
-## New iLQR
-Xsol, Usol = solve_ilqr(prob2, X0, U0, verbose=1, eps=1e-2, reg_min=1e-8, iters=500)
-visualize!(vis, prob2.model, prob2.tf, Xsol)
-evalcost(prob2.obj, Xsol, Usol)
-
-prob2, opts, Xref2 = YakProblems(costfun=:QuatLQR, scenario=:fullloop, heading=180)
-initial_controls!(prob2, controls(solver))
-solver = ALTROSolver(prob2, opts, verbose=2, infeasible=false, gradient_tolerance=0.1)
-solve!(solver)
-visualize!(vis, solver)
-
-plot(controls(solver))
-plot(Xref2, inds=11:13)
+# Solve
+Xfull, Ufull = solve_ilqr(prob, X0, U0, verbose=1, eps=1e-2, reg_min=1e-8, iters=500)
+visualize!(vis, prob.model, prob.tf, Xfull)

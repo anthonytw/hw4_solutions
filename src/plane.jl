@@ -87,9 +87,7 @@ function YakProblems(;
     tf = 1.25
     if scenario == :fullloop 
         tf *= 2
-        @show N
         N = (N-1)*2 + 1
-        @show N
     end
     dt = tf/(N-1)
 
@@ -162,36 +160,10 @@ function YakProblems(;
                 SA[0,pi/1.25,0]
             )
         end
-    elseif scenario == :corkscrew
-        rad = 1.0
-        rev = 1.0 
-        h_offset = rad - rad*cos(2pi*rev)
-        @show h_offset
-
-        x0 = RD.build_state(model, [-5,0,1.5], p0, [vel,0,0], [0,0,0])
-        xf = RD.build_state(model, [5,0,1.5+h_offset], pf, pf * [vel,0,0.], [0,0,0])
-
-        vel = (xf[1] - x0[1]) / tf
-        N_roll = (N-1) ÷ 2 
-        N_start = (N - N_roll) ÷ 2
-        t_roll = N_roll * dt
-        tstart = N_start * dt
-        times = range(0, tf, length=N)
-        ϕ = [zeros(N_start); range(0,-2pi*rev, length=N_roll); fill(-2pi*rev, N-N_start-N_roll)]
-        f = 2pi*rev/t_roll
-        Xref = map(1:N) do k
-            t = times[k]
-            do_roll = N_start < k < N_start + N_roll
-            RBState(
-                [-3 + vel*t, -rad*sin((t-tstart)*f)*do_roll, x0[3] - rad*(cos((t-tstart)*f)-1)*do_roll + h_offset*(k >= N_start + N_roll)],
-                expm([1,0,0]*ϕ[k])*p0,
-                [vel, -rad*f*cos((t-tstart)*f)*do_roll, rad*f*sin((t-tstart)*f)*do_roll],
-                [2pi*rev/t_roll*do_roll,0,0]
-            )
-        end
     else
         throw(ArgumentError("$scenario isn't a known scenario"))
     end
+
     # Objective
     Qf_diag = RD.fill_state(model, 10, 500*0, 100, 100.)
     Q_diag = RD.fill_state(model, Qpos*0.1, 0.1*0, 0.1, 1.1)
@@ -327,72 +299,39 @@ rollout!(prob)
 X0 = states(prob)
 U0 = controls(prob)
 visualize!(vis, prob.model, prob.tf, Xref)
-solver = ALTROSolver(prob, opts, verbose=2, infeasible=false)
+solver = ALTROSolver(prob, opts, verbose=2, infeasible=false, gradient_tolerance=1e-6)
 solve!(solver)
 visualize!(vis, solver)
 Uhalf = controls(solver)
 
 ## New iLQR
-X = deepcopy(X0)
-U = deepcopy(U0)
-evalcost(prob2.obj, X,U) ≈ cost(prob)
-solver = ALTROSolver(prob, save_S = true, verbose=2, cost_tolerance=1e-10, gradient_tolerance=1e-6)
-solver = Altro.get_ilqr(solver)
-solver.ρ[1] = 0.0
-n,m,N = size(prob)
+Xsol, Usol = solve_ilqr(prob2, X0, U0, verbose=1, eps=1e-4, reg_min=1e-6)
+visualize!(vis, prob2.model, prob2.tf, Xsol)
 
-P = [zeros(n-1,n-1) for k = 1:N]
-p = [zeros(n-1) for k = 1:N]
-K = [zeros(m,n-1) for k = 1:N-1]
-d = [zeros(m) for k = 1:N-1]
-ilqr.opts.save_S = true
-dJ, Quu, Qux, Qu = backwardpass!(prob2, P, p, K, d, X, U, β=0.0)
-J = evalcost(prob2.obj, X, U)
-forwardpass!(prob2, X, U, K, d, dJ, J)
-Xsol, Usol = solve_ilqr(prob2, X0, U0, verbose=1)
-
-solve!(solver)
-cost(solver)
-norm(Xsol - states(solver))
-norm(Usol - controls(solver))
-evalcost(prob2.obj, Xsol, Usol)
-maximum(norm.(solver.d, Inf))
-
-TO.state_diff_jacobian!(solver.G, solver.model, solver.Z)
-TO.dynamics_expansion!(TO.integration(solver), solver.D, solver.model, solver.Z, solver.cache)
-TO.error_expansion!(solver.D, solver.model, solver.G)
-TO.cost_expansion!(solver.quad_obj, solver.obj, solver.Z, solver.exp_cache, init=true, rezero=true)
-TO.error_expansion!(solver.E, solver.quad_obj, solver.model, solver.Z, solver.G)
-ΔV = Altro.static_backwardpass!(solver)
-Altro.forwardpass!(solver, ΔV, cost(solver))
-
-
-k = N-2
-Quu[k] ≈ solver.Q[k].uu
-Qux[k] ≈ solver.Q[k].ux
-Qu[k]
-solver.Q[k].u
-
-q,r = gradient(prob2.obj[k], X[k], U[k])
-r
-
-prob2, opts, Xref2, xf = YakProblems(costfun=:QuatLQR, scenario=:fullloop, heading=130, Qpos=100)
+##
+prob, prob2, opts, Xref2 = YakProblems(costfun=:QuatLQR, scenario=:fullloop, heading=130, Qpos=100)
 visualize!(vis, prob2.model, prob2.tf, Xref2)
 
-U0 = controls(prob2)
+U0 = controls(prob)
 u_hover = U0[1]
 for k = 1:length(U0)
     k2 = min(k, length(Uhalf))
     U0[k] = Uhalf[k2]
 end
 U0[1+length(Uhalf):end] .= reverse(Uhalf)
-initial_controls!(prob2, U0)
-rollout!(prob2)
-visualize!(vis, prob2)
-# initial_states!(prob2, Xref2)
-solver = ALTROSolver(prob2, opts, verbose=2, infeasible=false, gradient_tolerance=0.1)
+initial_controls!(prob, U0)
+rollout!(prob)
+X0 = states(prob)
+visualize!(vis, prob)
+solver = ALTROSolver(prob, opts, verbose=3, infeasible=false, gradient_tolerance=.01)
 solve!(solver)
 visualize!(vis, solver)
+cost(solver)
+
+## New iLQR
+Xsol, Usol = solve_ilqr(prob2, X0, U0, verbose=1, eps=1e-2, reg_min=1e-8, iters=500)
+visualize!(vis, prob2.model, prob2.tf, Xsol)
+evalcost(prob2.obj, Xsol, Usol)
 
 prob2, opts, Xref2 = YakProblems(costfun=:QuatLQR, scenario=:fullloop, heading=180)
 initial_controls!(prob2, controls(solver))

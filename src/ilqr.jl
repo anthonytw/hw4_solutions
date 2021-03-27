@@ -44,9 +44,6 @@ function backwardpass!(prob::iLQRProblem{n,m}, P, p, K, d, X, U;
     failed = false
     
     # TODO: Implement the backward pass
-    Quu = [zeros(m,m) for k = 1:N-1]
-    Qux = [zeros(m,n-1) for k = 1:N-1]
-    Qu = [zeros(m) for k = 1:N-1]
 
     # SOLUTION
     ∇f = RobotDynamics.DynamicsJacobian(prob.model) 
@@ -101,25 +98,17 @@ function backwardpass!(prob::iLQRProblem{n,m}, P, p, K, d, X, U;
         end
     
         # Regularization
-        Gxx_reg = Gxx + A'*β*I*A
+
+        Gxx_reg = Gxx #+ A'*β*I*A
         Guu_reg = Guu + B'*β*I*B
-        Gux_reg = Gux + B'*β*I*A
-        C = cholesky(Symmetric([Gxx_reg Gux_reg'; Gux_reg Guu_reg]), check=false)
-        if !issuccess(C)
-            β = 2*β
-            failed = true
-            println("INCREASING REGULARIZATION")
-            break
-        end
-
-        Quu[k] .= Guu_reg
-        Qux[k] .= Gux_reg
-        Qu[k] .= gu 
-
-        # if k == T-1
-        #     display(Guu)
-        #     display(Gux)
-        #     println(gu)
+        Gux_reg = Gux #+ B'*β*I*A
+        Guu_reg = SMatrix{m,m}(Guu) + β*Diagonal(@SVector ones(m))
+        # C = cholesky(Symmetric([Gxx_reg Gux_reg'; Gux_reg Guu_reg]), check=false)
+        # if !issuccess(C)
+        #     β = 2*β
+        #     failed = true
+        #     println("INCREASING REGULARIZATION")
+        #     break
         # end
         
         # Calculate Gains
@@ -133,7 +122,7 @@ function backwardpass!(prob::iLQRProblem{n,m}, P, p, K, d, X, U;
 
         G2 .= G1        
     end
-    return ΔJ, Quu, Qux, Qu
+    return ΔJ
 end
 
 """
@@ -254,6 +243,15 @@ function solve_ilqr(prob::iLQRProblem{n,m}, X0, U0;
 
         # Forward Pass
         Jn, α = forwardpass!(prob, X, U, K, d, ΔJ, J, Xbar, Ubar, max_iters=ls_iters)
+
+        if α === zero(α) 
+            β = max(β*10, 1.0)
+            # β *= 10 
+        # elseif α === one(α)
+        #     β = reg_min
+        else 
+            β = max(β/2, reg_min)
+        end
 
         # Update parameters
         tol = maximum(norm.(d, Inf))

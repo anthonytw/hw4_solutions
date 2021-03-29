@@ -36,7 +36,7 @@ storing the cost-to-go expansion in `P` and `p` and the gains in `K` and `d`.
 Should return ΔJ, expected cost reduction.
 """
 function backwardpass!(prob::iLQRProblem{n,m}, P, p, K, d, X, U; 
-        β=1e-6, ddp::Bool=false
+        β=1e-6
     ) where {n,m}
     N = prob.N
     obj = prob.obj
@@ -87,14 +87,6 @@ function backwardpass!(prob::iLQRProblem{n,m}, P, p, K, d, X, U;
         Guu = R + B'*P[k+1]*B
         Gux = B'*P[k+1]*A
         
-        if ddp 
-            # #Add full Newton terms
-            RobotDynamics.∇discrete_jacobian!(RK4, ∇jac, model, z, p[k+1])
-            Gxx .+= ∇jac[1:n, 1:n]
-            Guu .+= ∇jac[n+1:end, n+1:end]
-            Gux .+= ∇jac[n+1:end, 1:n]
-        end
-    
         # Regularization
         Guu_reg = Guu + B'*β*I*B
         Gux_reg = Gux 
@@ -227,8 +219,7 @@ function solve_ilqr(prob::iLQRProblem{n,m}, X0, U0;
         # SOLUTION
         
         # Backward Pass
-        ddp = tol < eps_ddp
-        ΔJ, = backwardpass!(prob, P, p, K, d, X, U, ddp=ddp, β=β)
+        ΔJ, = backwardpass!(prob, P, p, K, d, X, U, β=β)
 
         # Forward Pass
         Jn, α = forwardpass!(prob, X, U, K, d, ΔJ, J, Xbar, Ubar, max_iters=ls_iters)

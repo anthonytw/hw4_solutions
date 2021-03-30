@@ -9,6 +9,10 @@ function visualize!(vis, x::RBState{<:Real}, addrobot::Bool=true)
     settransform!(robot, compose(Translation(p), LinearMap(UnitQuaternion(q))))
 end
 
+function visualize!(vis, prob, X)
+    visualize!(vis, prob.model, prob.times[end], X)
+end
+
 function visualize!(vis, model::AbstractModel, tf::Real, X)
     fps = Int(round((length(X)-1)/tf))
     anim = MeshCat.Animation(fps)

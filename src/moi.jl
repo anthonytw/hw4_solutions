@@ -27,6 +27,17 @@ end
 MOI.initialize(prob::HybridNLP, features) = nothing
 MOI.jacobian_structure(nlp::HybridNLP) = vec(Tuple.(CartesianIndices(zeros(num_duals(nlp), num_primals(nlp)))))
 
+"""
+    solve(x0, nlp::HybridNLP; tol, c_tol, max_iter)
+
+Solve the NLP `nlp` using Ipopt via MathOptInterface, providing `x0` as an initial guess.
+
+# Keyword Arguments
+The following arguments are sent to Ipopt
+* `tol`: overall optimality tolerance
+* `c_tol`: constraint feasibility tolerance
+* `max_iter`: maximum number of solver iterations
+"""
 function solve(x0,prob::HybridNLP;
         tol=1.0e-6,c_tol=1.0e-6,max_iter=10000)
     n_nlp, m_nlp = num_primals(prob), num_duals(prob)

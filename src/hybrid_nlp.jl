@@ -424,4 +424,63 @@ function reference_trajectory(model::SimpleWalker, times)
     return Xref, Uref
 end
 
+using SparseArrays
+function get_rc(A::SparseMatrixCSC)
+    row,col,inds = findnz(A)
+    v = sortperm(inds)
+    row[v],col[v]
+end
+function jacobian_structure(nlp::HybridNLP{n,m}) where {n,m}
+    n_nlp, m_nlp = num_primals(nlp), num_duals(nlp)
+    jac = spzeros(m_nlp, n_nlp)
+    
+    xi,ui = nlp.xinds, nlp.uinds
+    m_nlp = size(jac,1)
+    Finit = view(jac, nlp.cinds[1], xi[1])
+    Fterm = view(jac, nlp.cinds[2], xi[end])
+    cnt = 1
+    for i = 1:n
+        Finit[i,i] = cnt
+        Fterm[i,i] = cnt + 1
+        cnt += 2
+    end
+    
+    # Dynamics
+    D = view(jac, nlp.cinds[3],:)
+    nblk = (n+m)*n
+    ci = 1:n
+    for k = 1:nlp.T-1
+        zi = [xi[k]; ui[k]]
+        F = view(D, ci, zi)
+        F2 = view(D, ci, xi[k+1])
+        F .= LinearIndices(zeros(n,n+m)) .+ cnt
+        cnt += n*(n+m)
+        F2 .= LinearIndices(zeros(n,n)) .+ cnt
+        cnt += n*n
+        ci = ci .+ n
+    end
+   
+    # Stance and length constraints
+    jac_stance = view(jac, nlp.cinds[4], :)
+    
+    t = 1
+    for k = 1:nlp.T
+        foot_ind = nlp.modes[k] == 1 ? 4 : 6
+        jac_stance[t, xi[k][foot_ind]] = cnt
+        t += 1
+        cnt += 1
+    end
+    
+    jac_length = view(jac, nlp.cinds[5], :)
+    for k = 1:nlp.T
+        jac_length[2*(k-1)+1, xi[k]] .= (1:n) .+ cnt
+        cnt += n
+        
+        jac_length[2*(k-1)+2, xi[k]] .= (1:n) .+ cnt
+        cnt += n
+    end
+    
+    return jac
+end
+
 include("moi.jl")

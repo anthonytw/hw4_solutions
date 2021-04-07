@@ -7,6 +7,7 @@ using StaticArrays
 using MeshCat
 using Blink
 using LinearAlgebra
+using TrajOptPlots
 
 Base.@kwdef struct SimpleWalker <: AbstractModel
     g::Float64 = 9.81
@@ -107,7 +108,7 @@ function set_mesh!(vis, model::SimpleWalker)
 
     return Lfoot
 end
-function visualize!(vis, model::SimpleWalker, x::StaticVector)
+function TrajOptPlots.visualize!(vis, model::SimpleWalker, x::StaticVector)
     xb,yb = x[1],x[2]
     xl,yl = x[3],x[4]
     xr,yr = x[5],x[6]

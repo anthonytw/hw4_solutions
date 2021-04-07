@@ -7,29 +7,29 @@ using MeshCat
 using Blink
 using LinearAlgebra
 
-function set_mesh!(vis0, model::Acrobot; color=colorant"blue", thick=0.05)
-    vis = vis0["robot"]
-    hinge = Cylinder(Point3f0(-0.05,0,0), Point3f0(0.05,0,0), 0.05f0)
-    dim1  = Vec(thick, thick, model.l[1])
-    link1 = Rect3D(Vec(-thick/2,-thick/2,0),dim1)
-    dim2  = Vec(thick, thick, model.l[2])
-    link2 = Rect3D(Vec(-thick/2,-thick/2,0),dim2)
-    mat1 = MeshPhongMaterial(color=colorant"grey")
-    mat2 = MeshPhongMaterial(color=color)
-    setobject!(vis["base"], hinge, mat1) 
-    setobject!(vis["link1"], link1, mat2) 
-    setobject!(vis["link1","joint"], hinge, mat1) 
-    setobject!(vis["link1","link2"], link2, mat2) 
-    settransform!(vis["link1","link2"], Translation(0,0,model.l[1]))
-    settransform!(vis["link1","joint"], Translation(0,0,model.l[1]))
-end
+# function set_mesh!(vis0, model::Acrobot; color=colorant"blue", thick=0.05)
+#     vis = vis0["robot"]
+#     hinge = Cylinder(Point3f0(-0.05,0,0), Point3f0(0.05,0,0), 0.05f0)
+#     dim1  = Vec(thick, thick, model.l[1])
+#     link1 = Rect3D(Vec(-thick/2,-thick/2,0),dim1)
+#     dim2  = Vec(thick, thick, model.l[2])
+#     link2 = Rect3D(Vec(-thick/2,-thick/2,0),dim2)
+#     mat1 = MeshPhongMaterial(color=colorant"grey")
+#     mat2 = MeshPhongMaterial(color=color)
+#     setobject!(vis["base"], hinge, mat1) 
+#     setobject!(vis["link1"], link1, mat2) 
+#     setobject!(vis["link1","joint"], hinge, mat1) 
+#     setobject!(vis["link1","link2"], link2, mat2) 
+#     settransform!(vis["link1","link2"], Translation(0,0,model.l[1]))
+#     settransform!(vis["link1","joint"], Translation(0,0,model.l[1]))
+# end
 
-function visualize!(vis, model::Acrobot, x::StaticVector)
-    e1 = @SVector [1,0,0]
-    q1,q2 = expm((x[1]-pi/2)*e1), expm(x[2]*e1)
-    settransform!(vis["robot","link1"], LinearMap(UnitQuaternion(q1)))
-    settransform!(vis["robot","link1","link2"], compose(Translation(0,0,model.l[1]), LinearMap(UnitQuaternion(q2))))
-end
+# function visualize!(vis, model::Acrobot, x::StaticVector)
+#     e1 = @SVector [1,0,0]
+#     q1,q2 = expm((x[1]-pi/2)*e1), expm(x[2]*e1)
+#     settransform!(vis["robot","link1"], LinearMap(UnitQuaternion(q1)))
+#     settransform!(vis["robot","link1","link2"], compose(Translation(0,0,model.l[1]), LinearMap(UnitQuaternion(q2))))
+# end
 
 #True model with friction
 function true_dynamics(model::Acrobot, x, u)
@@ -83,26 +83,4 @@ function true_dynamics_rk4(model, x, u, h)
     f3 = true_dynamics(model, x + 0.5*h*f2, u)
     f4 = true_dynamics(model, x + h*f3, u)
     return x + (h/6.0)*(f1 + 2*f2 + 2*f3 + f4)
-end
-
-function simulate(model::Acrobot, x0, ctrl; tf=5.0, dt=0.05, true_model=true, u_bnd=20.0)
-    n = length(x0)
-    m = length(ctrl.U[1])
-    times = ctrl.times 
-    N = length(ctrl.X)
-    X = [@SVector zeros(n) for k = 1:N]
-    U = [@SVector zeros(m) for k = 1:N-1]
-    X[1] = x0
-    for k = 1:N-1
-        x = X[k]
-        t = times[k]
-        u = get_control(ctrl, x, t)
-        u = clamp.(u, -u_bnd, u_bnd)
-        if true_model
-            X[k+1] = true_dynamics_rk4(model, x, u, dt)
-        else
-            X[k+1] = discrete_dynamics(RK4, model, x, u, t, dt)
-        end
-    end
-    return X
 end

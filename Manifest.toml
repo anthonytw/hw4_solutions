@@ -239,6 +239,12 @@ git-tree-sha1 = "3cc57ad0a213808473eafef4845a74766242e05f"
 uuid = "b22a6f82-2f65-5046-a5b2-351ab43fb4e5"
 version = "4.3.1+4"
 
+[[FileIO]]
+deps = ["Pkg", "Requires", "UUIDs"]
+git-tree-sha1 = "b4fdad5fe06e0226348301b5163925ac1ae8b64b"
+uuid = "5789e2e9-d7fb-5bc7-8068-2c6fae9b9549"
+version = "1.6.5"
+
 [[FileWatching]]
 uuid = "7b1f6079-737a-58dc-b8bc-7a2ca5c1b5ee"
 
@@ -473,6 +479,12 @@ deps = ["Base64", "BinDeps", "Blink", "Cassette", "Colors", "CoordinateTransform
 git-tree-sha1 = "ca4a1e45f5d2a2148c599804a6619da7708ede69"
 uuid = "283c5d60-a78f-5afe-a0af-af636b173e11"
 version = "0.13.2"
+
+[[MeshIO]]
+deps = ["ColorTypes", "FileIO", "GeometryBasics", "Printf"]
+git-tree-sha1 = "f969c87aa123e7718c95daa4eb0846a514006be1"
+uuid = "7269a6da-0436-5bbc-96c2-40638cbb6118"
+version = "0.4.5"
 
 [[Mmap]]
 uuid = "a63ad114-7e13-5084-954f-fe012c677804"
@@ -744,6 +756,14 @@ deps = ["Printf"]
 git-tree-sha1 = "32cdbe6cd2d214c25a0b88f985c9e0092877c236"
 uuid = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
 version = "0.5.8"
+
+[[TrajOptPlots]]
+deps = ["Colors", "CoordinateTransformations", "FileIO", "GeometryBasics", "MeshCat", "MeshIO", "Printf", "RecipesBase", "RobotDynamics", "RobotZoo", "Rotations", "StaticArrays", "TrajectoryOptimization"]
+git-tree-sha1 = "18ab8ec45ab5e9085afd4059241567e9e2169b8e"
+repo-rev = "master"
+repo-url = "https://github.com/RoboticExplorationLab/TrajOptPlots.jl.git"
+uuid = "7770976a-8dee-4930-bf39-a1782fd21ce6"
+version = "0.1.0"
 
 [[TrajectoryOptimization]]
 deps = ["DocStringExtensions", "FiniteDiff", "ForwardDiff", "LinearAlgebra", "MathOptInterface", "RobotDynamics", "Rotations", "SparseArrays", "StaticArrays", "UnsafeArrays"]

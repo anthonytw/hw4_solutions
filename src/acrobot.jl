@@ -7,30 +7,6 @@ using MeshCat
 using Blink
 using LinearAlgebra
 
-# function set_mesh!(vis0, model::Acrobot; color=colorant"blue", thick=0.05)
-#     vis = vis0["robot"]
-#     hinge = Cylinder(Point3f0(-0.05,0,0), Point3f0(0.05,0,0), 0.05f0)
-#     dim1  = Vec(thick, thick, model.l[1])
-#     link1 = Rect3D(Vec(-thick/2,-thick/2,0),dim1)
-#     dim2  = Vec(thick, thick, model.l[2])
-#     link2 = Rect3D(Vec(-thick/2,-thick/2,0),dim2)
-#     mat1 = MeshPhongMaterial(color=colorant"grey")
-#     mat2 = MeshPhongMaterial(color=color)
-#     setobject!(vis["base"], hinge, mat1) 
-#     setobject!(vis["link1"], link1, mat2) 
-#     setobject!(vis["link1","joint"], hinge, mat1) 
-#     setobject!(vis["link1","link2"], link2, mat2) 
-#     settransform!(vis["link1","link2"], Translation(0,0,model.l[1]))
-#     settransform!(vis["link1","joint"], Translation(0,0,model.l[1]))
-# end
-
-# function visualize!(vis, model::Acrobot, x::StaticVector)
-#     e1 = @SVector [1,0,0]
-#     q1,q2 = expm((x[1]-pi/2)*e1), expm(x[2]*e1)
-#     settransform!(vis["robot","link1"], LinearMap(UnitQuaternion(q1)))
-#     settransform!(vis["robot","link1","link2"], compose(Translation(0,0,model.l[1]), LinearMap(UnitQuaternion(q2))))
-# end
-
 #True model with friction
 function true_dynamics(model::Acrobot, x, u)
     g = 9.81

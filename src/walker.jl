@@ -1,4 +1,3 @@
-import Pkg; Pkg.activate(joinpath(@__DIR__,".."))
 using GeometryBasics
 using CoordinateTransformations, Rotations
 using RobotDynamics

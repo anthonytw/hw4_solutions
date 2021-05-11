@@ -14,9 +14,8 @@ end
 
 function MOI.eval_constraint_jacobian(prob::HybridNLP, vec, x)
     n_nlp, m_nlp = num_primals(prob), num_duals(prob)
-    jac = reshape(vec, m_nlp, n_nlp)
-    # ForwardDiff.jacobian!(reshape(jac,m_nlp,n_nlp), (c,x) -> eval_c!(nlp, c, x), zeros(m_nlp), x)
-    jac_c!(nlp, jac, x)
+    jac_c!(nlp, nlp.jac_buffer, x)
+    vec[:] = nlp.jac_view
     return nothing
 end
 
@@ -25,7 +24,7 @@ function MOI.features_available(prob::HybridNLP)
 end
 
 MOI.initialize(prob::HybridNLP, features) = nothing
-MOI.jacobian_structure(nlp::HybridNLP) = vec(Tuple.(CartesianIndices(zeros(num_duals(nlp), num_primals(nlp)))))
+MOI.jacobian_structure(nlp::HybridNLP) = nlp.jac_struct
 
 """
     solve(x0, nlp::HybridNLP; tol, c_tol, max_iter)
